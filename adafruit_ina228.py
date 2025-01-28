@@ -204,8 +204,12 @@ class INA228:  # noqa: PLR0904
         counts = [1, 4, 16, 64, 128, 256, 512, 1024]
         if count not in counts:
             raise ValueError(
-                f"Invalid averaging count: {count}. "
-                f"Valid values are: {', '.join(map(str, counts))}."
+                "Invalid averaging count: "
+                + str(count)
+                + ". "
+                + "Valid values are: "
+                + ", ".join(map(str, counts))
+                + "."
             )
         self._avg_count = counts.index(count)
 
