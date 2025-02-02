@@ -24,14 +24,12 @@ Table of Contents
 .. toctree::
     :caption: Tutorials
 
-.. todo:: Add any Learn guide links here. If there are none, then simply delete this todo and leave
-    the toctree above for use later.
+    Adafruit Learn Guide <https://learn.adafruit.com/adafruit-ina228-i2c-power-monitor>
 
 .. toctree::
     :caption: Related Products
 
-.. todo:: Add any product links here. If there are none, then simply delete this todo and leave
-    the toctree above for use later.
+    Adafruit INA228 - I2C 85V, 20-bit High or Low Side Power Monitor - STEMMA QT / Qwiic <https://www.adafruit.com/product/5832>
 
 .. toctree::
     :caption: Other Links
