@@ -125,7 +125,7 @@ class INA228:  # noqa: PLR0904
         self._shunt_res = 0
         self.reset()
         self.mode = Mode.CONTINUOUS_ALL
-        self.set_shunt(0.1, 2.0)
+        self.set_shunt(0.015, 10.0)
         self.conversion_time_bus = 150
         self.conversion_time_shunt = 280
         self.averaging_count = 16
