@@ -87,6 +87,28 @@ class Mode:
     CONTINUOUS_ALL = 0x0F
 
 
+class AlertType:
+    """Constants for alert type settings"""
+
+    NONE = 0x00
+    CONVERSION_READY = 0x01
+    OVERPOWER = 0x02
+    UNDERVOLTAGE = 0x04
+    OVERVOLTAGE = 0x08
+    UNDERCURRENT = 0x10
+    OVERCURRENT = 0x20
+    _VALID_VALUES = [
+        NONE,
+        CONVERSION_READY,
+        OVERPOWER,
+        UNDERVOLTAGE,
+        OVERVOLTAGE,
+        UNDERCURRENT,
+        OVERCURRENT,
+    ]
+    _MAX_COMBINED = 0x3F
+
+
 class INA228:  # noqa: PLR0904
     """Driver for the INA228 power and current sensor"""
 
@@ -95,8 +117,14 @@ class INA228:  # noqa: PLR0904
     _shunt_cal = UnaryStruct(_SHUNT_CAL, ">H")
     _diag_alrt = UnaryStruct(_DIAG_ALRT, ">H")
     _adc_range = RWBit(_CONFIG, 4, register_width=2)
+    _alert_type = RWBits(6, _DIAG_ALRT, 8, register_width=2)
+    _alert_polarity_bit = RWBit(_DIAG_ALRT, 12, register_width=2)
+    _alert_latch_bit = RWBit(_DIAG_ALRT, 15, register_width=2)
+    _reset_bit = RWBit(_CONFIG, 15, register_width=2)
+    _reset_accumulators_bit = RWBit(_CONFIG, 14, register_width=2)
     """Operating mode"""
     mode = RWBits(4, _ADC_CONFIG, 12, register_width=2)
+    _alert_conv_bit = RWBit(_DIAG_ALRT, 14, register_width=2)
     _vbus_ct = RWBits(3, _ADC_CONFIG, 9, register_width=2)
     _vshunt_ct = RWBits(3, _ADC_CONFIG, 6, register_width=2)
     _temper_ct = RWBits(3, _ADC_CONFIG, 3, register_width=2)
@@ -117,8 +145,13 @@ class INA228:  # noqa: PLR0904
         self.i2c_device = I2CDevice(i2c_bus, addr)
         self.buf3 = bytearray(3)  # Buffer for 24-bit registers
         self.buf5 = bytearray(5)  # Buffer for 40-bit registers
+        # Verify manufacturer ID (should be 0x5449 for Texas Instruments)
+        if self.manufacturer_id != 0x5449:
+            raise RuntimeError(
+                f"Invalid manufacturer ID: 0x{self.manufacturer_id:04X} (expected 0x5449)"
+            )
         # Verify device ID
-        dev_id = (self._device_id >> 4) & 0xFFF  # Get 12-bit device ID
+        dev_id = (self._device_id >> 4) & 0xFFF
         if dev_id != 0x228:
             raise RuntimeError(f"Failed to find INA228 - check your wiring! (Got ID: 0x{dev_id:X})")
         self._current_lsb = 0
@@ -131,8 +164,11 @@ class INA228:  # noqa: PLR0904
         self.averaging_count = 16
 
     def reset(self) -> None:
-        """Reset the INA228"""
-        self._config = 0x8000
+        """Reset the INA228 (all registers to default values)"""
+        self._reset_bit = True
+        self._alert_conv_bit = True
+        self.mode = Mode.CONTINUOUS_ALL
+        time.sleep(0.002)
 
     def _reg24(self, reg):
         """Read 24-bit register"""
@@ -152,7 +188,61 @@ class INA228:  # noqa: PLR0904
 
     def reset_accumulators(self) -> None:
         """Reset the energy and charge accumulators"""
-        self._config = 1 << 14
+        self._reset_accumulators_bit = True
+
+    @property
+    def adc_range(self) -> int:
+        """
+        ADC range.
+        0 = ±163.84 mV
+        1 = ±40.96 mV
+
+        When using the ±40.96 mV range, the shunt calibration value is automatically scaled by 4.
+        """
+        return self._adc_range
+
+    @adc_range.setter
+    def adc_range(self, value: int):
+        if value not in {0, 1}:
+            raise ValueError("ADC range must be 0 (±163.84 mV) or 1 (±40.96 mV)")
+        self._adc_range = value
+        self._update_calibration()
+
+    @property
+    def alert_type(self) -> int:
+        """
+        The alert trigger type. Use AlertType constants.
+        Can be OR'd together for multiple triggers.
+
+        Example:
+            # Single alert type
+            sensor.alert_type = AlertType.OVERPOWER
+
+            # Multiple alert types
+            sensor.alert_type = AlertType.OVERPOWER | AlertType.OVERVOLTAGE
+        """
+        return self._alert_type
+
+    @alert_type.setter
+    def alert_type(self, value: int):
+        # Check if it's a valid combination of alert types
+        if value < 0 or value > AlertType._MAX_COMBINED:
+            raise ValueError(f"Invalid alert type value: {value}. Must be 0-0x3F")
+
+        # Optional: Validate that only valid bits are set
+        valid_mask = (
+            AlertType.CONVERSION_READY
+            | AlertType.OVERPOWER
+            | AlertType.UNDERVOLTAGE
+            | AlertType.OVERVOLTAGE
+            | AlertType.UNDERCURRENT
+            | AlertType.OVERCURRENT
+        )
+
+        if value & ~valid_mask:
+            raise ValueError(f"Invalid alert type bits set: 0x{value:02X}")
+
+        self._alert_type = value
 
     @property
     def conversion_time_bus(self) -> int:
@@ -233,7 +323,7 @@ class INA228:  # noqa: PLR0904
         """Configure for 32V and up to 2A measurements"""
         self._mode = Mode.CONTINUOUS_ALL
         time.sleep(0.001)
-        self.set_shunt(0.1, 2.0)
+        self.set_shunt(0.015, 10.0)
         self._vbus_ct = 5
         self._vshunt_ct = 5
         self._temper_ct = 5
@@ -295,6 +385,8 @@ class INA228:  # noqa: PLR0904
     def charge(self) -> float:
         """Accumulated charge in coulombs"""
         raw = self._reg40(_CHARGE)
+        if raw & (1 << 39):
+            raw |= -1 << 40
         return raw * self._current_lsb
 
     @property
@@ -332,26 +424,20 @@ class INA228:  # noqa: PLR0904
     @property
     def alert_latch(self) -> bool:
         """Alert latch setting. True=latched, False=transparent"""
-        return bool(self._diag_alrt & (1 << 15))
+        return bool(self._alert_latch_bit)
 
     @alert_latch.setter
     def alert_latch(self, value: bool):
-        if value:
-            self._diag_alrt |= 1 << 15
-        else:
-            self._diag_alrt &= ~(1 << 15)
+        self._alert_latch_bit = value
 
     @property
     def alert_polarity(self) -> bool:
         """Alert polarity. True=inverted, False=normal"""
-        return bool(self._diag_alrt & (1 << 12))
+        return bool(self._alert_polarity_bit)
 
     @alert_polarity.setter
     def alert_polarity(self, value: bool):
-        if value:
-            self._diag_alrt |= 1 << 12
-        else:
-            self._diag_alrt &= ~(1 << 12)
+        self._alert_polarity_bit = value
 
     @property
     def shunt_voltage_overlimit(self) -> float:
@@ -366,7 +452,7 @@ class INA228:  # noqa: PLR0904
     @property
     def alert_flags(self) -> dict:
         """
-        Get all diagnostic and alert flags
+        All diagnostic and alert flags
 
         Returns a dictionary with the status of each flag:
 
